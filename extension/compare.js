@@ -44,10 +44,30 @@ document.getElementById('settings-btn').addEventListener('click', () => {
 });
 
 // ── Check for auto-captured document ──────────────────────────────────────────
+function clearCapture() {
+  chrome.storage.session.remove(['capturedPDF', 'capturedText', 'capturedAt', 'pageUrl']);
+  capturedB64  = null;
+  capturedText = null;
+  window.__eleventhHourPDFDecoded = null;
+  const el = document.getElementById('capture-status');
+  el.className = 'status-card yellow';
+  el.innerHTML = `
+    <span class="status-icon">⚠️</span>
+    <div class="status-body">
+      <strong>No auto-captured document</strong>
+      <span>Upload the document manually below.</span>
+    </div>`;
+  document.getElementById('manual-box').style.display = 'block';
+  checkReady();
+}
+
 chrome.storage.session.get(['capturedPDF', 'capturedText', 'capturedAt', 'pageUrl'], (r) => {
   const el     = document.getElementById('capture-status');
   const age    = Math.round((Date.now() - r.capturedAt) / 60000);
   const ageStr = age < 1 ? 'Just now' : age + ' min ago';
+  const src    = r.pageUrl ? new URL(r.pageUrl).hostname : null;
+  const srcStr = src ? `from ${src}` : '';
+  const clearLink = `<a href="#" id="clear-capture" style="font-size:11px;color:#52525b;display:block;margin-top:6px;">Not the right document? Upload manually instead.</a>`;
 
   if (r.capturedPDF) {
     const decoded = atob(r.capturedPDF);
@@ -58,8 +78,9 @@ chrome.storage.session.get(['capturedPDF', 'capturedText', 'capturedAt', 'pageUr
     el.innerHTML = `
       <span class="status-icon">✅</span>
       <div class="status-body">
-        <strong>DocuSign document captured (${kb} KB PDF)</strong>
-        <span>Captured ${ageStr}</span>
+        <strong>Document captured (${kb} KB PDF)</strong>
+        <span>Captured ${ageStr}${srcStr ? ' · ' + srcStr : ''}</span>
+        ${clearLink}
       </div>`;
   } else if (r.capturedText) {
     capturedText = r.capturedText;
@@ -68,8 +89,9 @@ chrome.storage.session.get(['capturedPDF', 'capturedText', 'capturedAt', 'pageUr
     el.innerHTML = `
       <span class="status-icon">✅</span>
       <div class="status-body">
-        <strong>DocuSign document captured (${kb} KB text)</strong>
-        <span>Captured ${ageStr}</span>
+        <strong>Document captured (${kb} KB text)</strong>
+        <span>Captured ${ageStr}${srcStr ? ' · ' + srcStr : ''}</span>
+        ${clearLink}
       </div>`;
   } else {
     el.className = 'status-card yellow';
@@ -77,10 +99,14 @@ chrome.storage.session.get(['capturedPDF', 'capturedText', 'capturedAt', 'pageUr
       <span class="status-icon">⚠️</span>
       <div class="status-body">
         <strong>No auto-captured document</strong>
-        <span>Upload the DocuSign document manually below, or return to DocuSign and re-open this tool.</span>
+        <span>Upload the document manually below.</span>
       </div>`;
     document.getElementById('manual-box').style.display = 'block';
   }
+
+  const clearBtn = document.getElementById('clear-capture');
+  if (clearBtn) clearBtn.addEventListener('click', (e) => { e.preventDefault(); clearCapture(); });
+
   checkReady();
 });
 
