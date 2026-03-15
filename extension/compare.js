@@ -446,13 +446,13 @@ async function renderPDFToImages(arrayBuffer) {
   const maxPages = Math.min(pdf.numPages, 20);
   for (let i = 1; i <= maxPages; i++) {
     const page     = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 1.5 });
+    const viewport = page.getViewport({ scale: 2.5 });
     const canvas   = document.createElement('canvas');
     canvas.width   = viewport.width;
     canvas.height  = viewport.height;
     const annotationMode = pdfjsLib.AnnotationMode?.ENABLE ?? 1;
     await page.render({ canvasContext: canvas.getContext('2d'), viewport, annotationMode }).promise;
-    const b64 = canvas.toDataURL('image/jpeg', 0.75).split(',')[1];
+    const b64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
     console.log(`[11th Hour] page ${i} rendered: ${Math.round(b64.length * 0.75 / 1024)} KB`);
     images.push(b64);
   }
@@ -518,14 +518,20 @@ async function callAIWithImages(execB64, refB64, refTextFallback) {
 async function callGeminiWithImages(apiKey, model, execImages, refImages, refTextFallback, prompt) {
   const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const parts = [];
-  parts.push({ text: `REFERENCE (previously agreed version) — ${refImages ? refImages.length : 'text'} page(s):` });
   if (refImages) {
-    for (const img of refImages) parts.push({ inline_data: { mime_type: 'image/jpeg', data: img } });
+    const pages = Math.max(refImages.length, execImages.length);
+    for (let i = 0; i < pages; i++) {
+      parts.push({ text: `--- PAGE ${i + 1} ---` });
+      parts.push({ text: `REFERENCE page ${i + 1}:` });
+      if (refImages[i])  parts.push({ inline_data: { mime_type: 'image/jpeg', data: refImages[i] } });
+      parts.push({ text: `EXECUTION page ${i + 1}:` });
+      if (execImages[i]) parts.push({ inline_data: { mime_type: 'image/jpeg', data: execImages[i] } });
+    }
   } else {
-    parts.push({ text: refTextFallback });
+    parts.push({ text: `REFERENCE (previously agreed version):\n${refTextFallback}` });
+    parts.push({ text: `EXECUTION (version now presented for signature) — ${execImages.length} page(s):` });
+    for (const img of execImages) parts.push({ inline_data: { mime_type: 'image/jpeg', data: img } });
   }
-  parts.push({ text: `EXECUTION (version now presented for signature) — ${execImages.length} page(s):` });
-  for (const img of execImages) parts.push({ inline_data: { mime_type: 'image/jpeg', data: img } });
   parts.push({ text: prompt });
   const r = await fetch(url, {
     method: 'POST',
@@ -539,14 +545,22 @@ async function callGeminiWithImages(apiKey, model, execImages, refImages, refTex
 
 async function callClaudeWithImages(apiKey, model, execImages, refImages, refTextFallback, prompt) {
   const content = [];
-  content.push({ type: 'text', text: `REFERENCE (previously agreed version) — ${refImages ? refImages.length : 'text'} page(s):` });
+  const numPages = refImages ? Math.max(refImages.length, execImages.length) : execImages.length;
+  content.push({ type: 'text', text: `Compare these two contract versions page by page. REFERENCE = previously agreed version. EXECUTION = version now presented for signature. Pages are interleaved for direct comparison.` });
   if (refImages) {
-    for (const img of refImages) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } });
+    for (let i = 0; i < numPages; i++) {
+      content.push({ type: 'text', text: `--- Page ${i + 1} REFERENCE ---` });
+      if (i < refImages.length) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: refImages[i] } });
+      content.push({ type: 'text', text: `--- Page ${i + 1} EXECUTION ---` });
+      if (i < execImages.length) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: execImages[i] } });
+    }
   } else {
-    content.push({ type: 'text', text: refTextFallback });
+    content.push({ type: 'text', text: `REFERENCE (text): ${refTextFallback}` });
+    for (let i = 0; i < execImages.length; i++) {
+      content.push({ type: 'text', text: `--- Page ${i + 1} EXECUTION ---` });
+      content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: execImages[i] } });
+    }
   }
-  content.push({ type: 'text', text: `EXECUTION (version now presented for signature) — ${execImages.length} page(s):` });
-  for (const img of execImages) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } });
   content.push({ type: 'text', text: prompt });
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
