@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #09090b; color: #e4e4e7;
+      width: 260px; padding: 20px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+    .brand-icon {
+      width: 34px; height: 34px; border-radius: 7px; flex-shrink: 0;
+      overflow: hidden; box-shadow: 0 0 12px rgba(0, 230, 200, 0.25);
+    }
+    .brand-icon img { width: 100%; height: 100%; object-fit: cover; object-position: center; }
+    .brand-name { font-size: 16px; font-weight: 700; color: #fff; letter-spacing: -0.3px; }
+    .brand-name em { font-style: normal; color: #2dd4bf; }
+
+    .status {
+      font-size: 12px; font-weight: 500; color: #71717a;
+      margin-bottom: 16px; line-height: 1.5;
+      padding: 10px 12px; background: #18181b;
+      border: 1px solid #27272a; border-radius: 7px;
+      display: flex; align-items: flex-start; gap: 8px;
+    }
+    .status .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+    .status.ok   { color: #10b981; border-color: rgba(16,185,129,0.25); background: rgba(16,185,129,0.07); }
+    .status.ok .dot { background: #10b981; box-shadow: 0 0 6px #10b981; }
+    .status.warn { color: #f59e0b; border-color: rgba(245,158,11,0.25); }
+    .status.warn .dot { background: #f59e0b; }
+
+    .btn {
+      width: 100%; padding: 11px 12px;
+      background: #f4f4f5; color: #09090b;
+      border: none; border-radius: 8px;
+      font-size: 13px; font-weight: 700; cursor: pointer;
+      transition: all 0.15s;
+      box-shadow: 0 0 20px rgba(255,255,255,0.07);
+    }
+    .btn:hover { background: #fff; transform: translateY(-1px); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand-icon"><img src="logo.png" alt="11th Hour" /></div>
+    <div class="brand-name">11th <em>Hour</em></div>
+  </div>
+  <div class="status warn" id="status">
+    <span class="dot"></span><span>Checking…</span>
+  </div>
+  <button class="btn" id="btn">Open Compare Tool</button>
+  <script src="popup.js"></script>
+</body>
+</html>

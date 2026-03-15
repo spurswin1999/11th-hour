@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "11th Hour — Contract Comparator",
+  "version": "0.2.0",
+  "description": "Compare the contract you are about to sign against your negotiated version before signing.",
+  "permissions": [
+    "storage",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.docusign.com/*",
+    "https://*.docusign.net/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://app.docusign.com/*",
+        "https://*.docusign.net/*",
+        "https://*.docusign.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "11th Hour",
+    "default_icon": "logo.png"
+  },
+  "icons": {
+    "128": "logo.png"
+  },
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["interceptor.js", "lib/pdf.worker.min.js", "logo.png"],
+      "matches": [
+        "https://*.docusign.com/*",
+        "https://*.docusign.net/*",
+        "chrome-extension://*/*"
+      ]
+    }
+  ]
+}
