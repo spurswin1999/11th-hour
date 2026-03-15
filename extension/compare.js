@@ -173,6 +173,7 @@ document.getElementById('run-btn').addEventListener('click', async () => {
     // 2. Extract reference doc text
     setStatus('Reading reference document…');
     const refBuf  = await refFile.arrayBuffer();
+    const refB64  = refFile.name.toLowerCase().endsWith('.pdf') ? arrayBufferToB64(refBuf) : null;
     const refText = await extractFile(refBuf, refFile.name);
 
     // 3. Normalize
@@ -192,10 +193,16 @@ document.getElementById('run-btn').addEventListener('click', async () => {
     setStatus('Computing diff…');
     const diff = computeDiff(refNorm, execNorm);
 
-    // 5. AI summary — send all changes so LLM indices match redline group numbers
+    // 5. AI summary
+    // If we have the execution PDF binary, send both docs directly to the AI so it
+    // can see annotations, overlays, and image-rendered pages — not just the text layer.
+    // OpenAI doesn't support inline PDFs so always falls back to text diff.
     let aiSummary = null;
-    if (diff.all.length > 0) {
-      setStatus('Getting AI analysis…');
+    setStatus('Getting AI analysis…');
+    if (capturedB64 && llmSettings.llmProvider !== 'openai') {
+      aiSummary = await callAIWithPDFs(capturedB64, refB64, refNorm);
+    }
+    if (!aiSummary && diff.all.length > 0) {
       aiSummary = await callAI(diff.all);
     }
 
@@ -413,6 +420,105 @@ async function callAI(changes) {
   }
 }
 
+// ── PDF-based AI comparison ────────────────────────────────────────────────────
+// Sends both documents as raw PDFs so the AI sees annotations, overlays, and
+// image-rendered pages — not just whatever text extraction could pull out.
+
+function buildPDFPrompt() {
+  const { llmCustomPrompt, llmRedFlagFocus, llmSummaryFormat } = llmSettings;
+
+  const userCustomPrompt = llmCustomPrompt && llmCustomPrompt.trim();
+  const looksLikeDefault = userCustomPrompt && userCustomPrompt.startsWith('You are a legal expert');
+  if (userCustomPrompt && !looksLikeDefault) return userCustomPrompt;
+
+  const redFlagBody = llmRedFlagFocus && llmRedFlagFocus.trim()
+    ? llmRedFlagFocus.trim()
+    : `any word or phrase that reverses or negates clause meaning (e.g. adding or removing "not"), ` +
+      `changes to liability caps or limitations, governing law, warranty, indemnification, payment terms, or IP rights`;
+
+  const formatClause = llmSummaryFormat && llmSummaryFormat.trim()
+    ? `Additional formatting instructions: ${llmSummaryFormat.trim()}\n\n`
+    : `Never characterize a change to legal obligations, rights, warranties, or liability as "minor". ` +
+      `Lead with the most legally impactful change.\n\n`;
+
+  return (
+    'You are a legal expert comparing two contract documents.\n\n' +
+    'The REFERENCE document is the version previously agreed or negotiated. ' +
+    'The EXECUTION document is the version now being presented for signature.\n\n' +
+    'Identify every difference between them — including any annotations, overlays, ' +
+    'handwritten notes, or text added anywhere on the page, not just in the main body.\n\n' +
+    'Identify each change by its clause or section name. ' +
+    'If no section name is apparent, quote the key phrase that changed.\n\n' +
+    formatClause +
+    'Respond in this exact format:\n\n' +
+    'OVERALL: One sentence characterizing the nature of the changes.\n\n' +
+    'KEY CHANGES:\n' +
+    '• [Clause/section name] — [what changed and its practical impact; note if more or less favorable to the signer]\n' +
+    '(3–5 bullets max, most significant first)\n\n' +
+    'RED FLAGS: Identify every change that is particularly concerning — flag: ' + redFlagBody + '. ' +
+    'Describe each red flag in its own bullet, quoting the specific language that changed. ' +
+    "If none, write 'None identified.'"
+  );
+}
+
+async function callAIWithPDFs(execB64, refB64, refTextFallback) {
+  const { llmProvider, llmApiKey, llmModel } = llmSettings;
+  if (!llmProvider || llmProvider === 'none' || !llmApiKey) return null;
+  const prompt = buildPDFPrompt();
+  try {
+    switch (llmProvider) {
+      case 'gemini': return await callGeminiWithPDFs(llmApiKey, llmModel || 'gemini-2.0-flash', execB64, refB64, refTextFallback, prompt);
+      case 'claude': return await callClaudeWithPDFs(llmApiKey, llmModel || 'claude-sonnet-4-6',  execB64, refB64, refTextFallback, prompt);
+      default: return null;
+    }
+  } catch (e) {
+    return `(AI summary unavailable: ${e.message})`;
+  }
+}
+
+async function callGeminiWithPDFs(apiKey, model, execB64, refB64, refTextFallback, prompt) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const parts = [];
+  parts.push({ text: 'REFERENCE DOCUMENT (previously agreed version):' });
+  if (refB64) {
+    parts.push({ inline_data: { mime_type: 'application/pdf', data: refB64 } });
+  } else {
+    parts.push({ text: refTextFallback });
+  }
+  parts.push({ text: 'EXECUTION DOCUMENT (version now presented for signature):' });
+  parts.push({ inline_data: { mime_type: 'application/pdf', data: execB64 } });
+  parts.push({ text: prompt });
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts }] }),
+  });
+  if (!r.ok) throw new Error(`Gemini ${r.status}: ${await r.text()}`);
+  const d = await r.json();
+  return d.candidates?.[0]?.content?.parts?.[0]?.text || null;
+}
+
+async function callClaudeWithPDFs(apiKey, model, execB64, refB64, refTextFallback, prompt) {
+  const content = [];
+  content.push({ type: 'text', text: 'REFERENCE DOCUMENT (previously agreed version):' });
+  if (refB64) {
+    content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: refB64 } });
+  } else {
+    content.push({ type: 'text', text: refTextFallback });
+  }
+  content.push({ type: 'text', text: 'EXECUTION DOCUMENT (version now presented for signature):' });
+  content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: execB64 } });
+  content.push({ type: 'text', text: prompt });
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({ model, max_tokens: 2048, messages: [{ role: 'user', content }] }),
+  });
+  if (!r.ok) throw new Error(`Claude ${r.status}: ${await r.text()}`);
+  const d = await r.json();
+  return d.content?.[0]?.text || null;
+}
+
 async function callGemini(apiKey, model, prompt) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const r = await fetch(url, {
@@ -622,6 +728,14 @@ function esc(str) {
 function escRedline(str) {
   return String(str || '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function arrayBufferToB64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  return btoa(binary);
 }
 
 function fileToB64(file) {

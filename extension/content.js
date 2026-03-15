@@ -113,12 +113,14 @@ window.addEventListener('message', (event) => {
 
   // Interceptor found the signing API base URL from the envelope fetch
   if (event.data?.type === 'ELEVENTH_HOUR_SIGNING_BASE' && !IN_IFRAME) {
+    _envelopeBase = event.data.base;
     trySigningApiDownload(event.data.base);
   }
 
   // Interceptor captured the full envelope JSON
   if (event.data?.type === 'ELEVENTH_HOUR_ENVELOPE_DATA' && !IN_IFRAME) {
     const { base, data } = event.data;
+    _envelopeBase = base;
     console.log('[11th Hour] envelope data:', JSON.stringify(data).substring(0, 500));
     tryFromEnvelopeData(base, data);
   }
@@ -369,6 +371,7 @@ function captureText(text) {
 // ── 7. Main frame: button + listeners ────────────────────────────────────────
 let compareBtn = null;
 let _hasCapturedContent = false; // true once PDF/text captured, so button can be set ready on inject
+let _envelopeBase = null;        // signing API base URL, stored when interceptor captures envelope
 
 if (!IN_IFRAME) {
   chrome.runtime.onMessage.addListener((msg) => {
@@ -453,8 +456,45 @@ function createButton() {
   btn.title = 'Checking for document…';
   btn.innerHTML = `<span style="font-weight:700;color:#fff;letter-spacing:-0.2px;">11th <span style="color:#2dd4bf;">Hour</span></span>`;
   styleBtn(btn, '#18181b');
-  btn.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'OPEN_COMPARE' }));
+  btn.addEventListener('click', fetchAndCompare);
   return btn;
+}
+
+// ── Fetch PDF on button click, then open compare ──────────────────────────────
+async function fetchAndCompare() {
+  const ti = new URLSearchParams(window.location.search).get('ti');
+
+  // If we have a signing base and ti token, try to fetch the actual PDF now.
+  // This runs on button click so the session is guaranteed active.
+  if (ti && _envelopeBase) {
+    setButtonState('loading');
+    const candidates = [
+      `${_envelopeBase}/download?ti=${ti}&insession=1`,
+      `${_envelopeBase}/Download?ti=${ti}&insession=1`,
+      `${_envelopeBase}/documents/combined?ti=${ti}&insession=1`,
+      `${_envelopeBase}/print?ti=${ti}&insession=1`,
+      `${_envelopeBase}/Print?ti=${ti}&insession=1`,
+    ];
+    for (const url of candidates) {
+      try {
+        const r = await fetch(url, { credentials: 'include' });
+        const ct = r.headers.get('content-type') || '';
+        console.log(`[11th Hour] button-click PDF fetch ${url.replace(_envelopeBase, '')} → ${r.status} ${ct}`);
+        if (r.ok && ct.includes('pdf')) {
+          const buf = await r.arrayBuffer();
+          if (buf.byteLength > 1000) {
+            console.log(`[11th Hour] PDF fetched on button click: ${(buf.byteLength / 1024).toFixed(0)} KB`);
+            captureBuffer(new Uint8Array(buf));
+            break;
+          }
+        }
+      } catch (e) {
+        console.log(`[11th Hour] button-click fetch failed: ${e.message}`);
+      }
+    }
+  }
+
+  chrome.runtime.sendMessage({ type: 'OPEN_COMPARE' });
 }
 
 function styleBtn(btn, bg) {
@@ -485,6 +525,10 @@ function setButtonState(state) {
     compareBtn.title = 'Document captured — click to compare before signing';
     compareBtn.dataset.ready = '1';
     styleBtn(compareBtn, '#1a56db');
+  } else if (state === 'loading') {
+    setBrandHTML(compareBtn, '⏳');
+    compareBtn.title = 'Fetching document…';
+    styleBtn(compareBtn, '#52525b');
   } else if (state === 'failed') {
     setBrandHTML(compareBtn, '⚠');
     compareBtn.title = 'Could not auto-capture — click to upload manually';
