@@ -256,6 +256,16 @@ async function extractPDF(arrayBuffer) {
     const page    = await pdf.getPage(i);
     const content = await page.getTextContent();
     parts.push(content.items.map(item => item.str).join(' '));
+
+    // Also extract annotation contents (FreeText, popups, form fields, overlays).
+    // These are stored separately from the main content stream and are otherwise invisible.
+    try {
+      const annotations = await page.getAnnotations();
+      for (const ann of annotations) {
+        const text = (ann.contents || ann.fieldValue || '').trim();
+        if (text) parts.push(`[ANNOTATION: ${text}]`);
+      }
+    } catch (_) {}
   }
   return parts.join('\n');
 }
