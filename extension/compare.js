@@ -452,7 +452,7 @@ async function renderPDFToImages(arrayBuffer) {
     canvas.height  = viewport.height;
     const annotationMode = pdfjsLib.AnnotationMode?.ENABLE ?? 1;
     await page.render({ canvasContext: canvas.getContext('2d'), viewport, annotationMode }).promise;
-    const b64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+    const b64 = canvas.toDataURL('image/png').split(',')[1];
     console.log(`[11th Hour] page ${i} rendered: ${Math.round(b64.length * 0.75 / 1024)} KB`);
     images.push(b64);
   }
@@ -480,15 +480,18 @@ function buildImagePrompt() {
     'You are a legal expert comparing two versions of a contract.\n\n' +
     'The REFERENCE is the version previously agreed or negotiated. ' +
     'The EXECUTION is the version now being presented for signature.\n\n' +
-    'Look carefully at every part of every page — including any floating text, annotations, ' +
-    'stamps, or text added outside the normal document flow. ' +
-    'Identify each difference by its clause or section name, or by quoting the key phrase if no section is named.\n\n' +
+    'Scrutinize every pixel of every page. Look for ANY visual difference, no matter how small: ' +
+    'floating text boxes, annotations, stamps, watermarks, handwritten additions, text overlaid on the page, ' +
+    'highlighted regions, words added or removed anywhere on the page — including headers, footers, margins, ' +
+    'and areas outside the main body text. Even a single added or changed word or sentence is significant.\n\n' +
+    'If the documents look identical to you but there is a small visual element present in one page that is absent in the corresponding page, report it explicitly.\n\n' +
     formatClause +
     'Respond in this exact format:\n\n' +
     'OVERALL: One sentence characterizing the nature of the changes.\n\n' +
     'KEY CHANGES:\n' +
-    '• [Clause/section name] — [what changed and its practical impact; note if more or less favorable to the signer]\n' +
-    '(3–5 bullets max, most significant first)\n\n' +
+    '• [Clause/section name or location on page] — [what changed and its practical impact; note if more or less favorable to the signer]\n' +
+    '(List every change found, most significant first. Do not limit yourself to 3-5 if more exist.)\n\n' +
+    'VISUAL ANNOTATIONS: List any floating text, stamps, handwritten notes, or overlaid text found in one document but not the other. Quote the exact text. If none, write "None."\n\n' +
     'RED FLAGS: Identify every change that is particularly concerning — flag: ' + redFlagBody + '. ' +
     'Describe each red flag in its own bullet, quoting the specific language. ' +
     "If none, write 'None identified.'"
@@ -523,14 +526,14 @@ async function callGeminiWithImages(apiKey, model, execImages, refImages, refTex
     for (let i = 0; i < pages; i++) {
       parts.push({ text: `--- PAGE ${i + 1} ---` });
       parts.push({ text: `REFERENCE page ${i + 1}:` });
-      if (refImages[i])  parts.push({ inline_data: { mime_type: 'image/jpeg', data: refImages[i] } });
+      if (refImages[i])  parts.push({ inline_data: { mime_type: 'image/png', data: refImages[i] } });
       parts.push({ text: `EXECUTION page ${i + 1}:` });
-      if (execImages[i]) parts.push({ inline_data: { mime_type: 'image/jpeg', data: execImages[i] } });
+      if (execImages[i]) parts.push({ inline_data: { mime_type: 'image/png', data: execImages[i] } });
     }
   } else {
     parts.push({ text: `REFERENCE (previously agreed version):\n${refTextFallback}` });
     parts.push({ text: `EXECUTION (version now presented for signature) — ${execImages.length} page(s):` });
-    for (const img of execImages) parts.push({ inline_data: { mime_type: 'image/jpeg', data: img } });
+    for (const img of execImages) parts.push({ inline_data: { mime_type: 'image/png', data: img } });
   }
   parts.push({ text: prompt });
   const r = await fetch(url, {
@@ -550,15 +553,15 @@ async function callClaudeWithImages(apiKey, model, execImages, refImages, refTex
   if (refImages) {
     for (let i = 0; i < numPages; i++) {
       content.push({ type: 'text', text: `--- Page ${i + 1} REFERENCE ---` });
-      if (i < refImages.length) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: refImages[i] } });
+      if (i < refImages.length) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: refImages[i] } });
       content.push({ type: 'text', text: `--- Page ${i + 1} EXECUTION ---` });
-      if (i < execImages.length) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: execImages[i] } });
+      if (i < execImages.length) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: execImages[i] } });
     }
   } else {
     content.push({ type: 'text', text: `REFERENCE (text): ${refTextFallback}` });
     for (let i = 0; i < execImages.length; i++) {
       content.push({ type: 'text', text: `--- Page ${i + 1} EXECUTION ---` });
-      content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: execImages[i] } });
+      content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: execImages[i] } });
     }
   }
   content.push({ type: 'text', text: prompt });
