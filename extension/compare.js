@@ -194,15 +194,17 @@ document.getElementById('run-btn').addEventListener('click', async () => {
     const diff = computeDiff(refNorm, execNorm);
 
     // 5. AI summary
-    // If we have the execution PDF binary, send both docs directly to the AI so it
-    // can see annotations, overlays, and image-rendered pages — not just the text layer.
-    // OpenAI doesn't support inline PDFs so always falls back to text diff.
+    // Render both PDFs to page images and send to the AI's vision API.
+    // This catches everything visible on the page: annotations, overlays,
+    // image-rendered text — anything text extraction misses.
+    // Falls back to text diff for OpenAI (no vision path) or when no PDF binary.
     let aiSummary = null;
-    setStatus('Getting AI analysis…');
     if (capturedB64 && llmSettings.llmProvider !== 'openai') {
-      aiSummary = await callAIWithPDFs(capturedB64, refB64, refNorm);
+      setStatus('Rendering pages for AI analysis…');
+      aiSummary = await callAIWithImages(capturedB64, refB64, refNorm);
     }
     if (!aiSummary && diff.all.length > 0) {
+      setStatus('Getting AI analysis…');
       aiSummary = await callAI(diff.all);
     }
 
@@ -430,11 +432,31 @@ async function callAI(changes) {
   }
 }
 
-// ── PDF-based AI comparison ────────────────────────────────────────────────────
-// Sends both documents as raw PDFs so the AI sees annotations, overlays, and
-// image-rendered pages — not just whatever text extraction could pull out.
+// ── Image-based AI comparison ──────────────────────────────────────────────────
+// Renders each PDF page to a JPEG via PDF.js canvas, then sends the page images
+// to the AI's vision API. The AI sees exactly what a human sees — annotations,
+// overlays, image-rendered text — nothing is lost to text extraction.
+// If the reference doc is a DOCX (no PDF binary), its extracted text is sent
+// alongside the execution page images so the AI can still compare both sides.
 
-function buildPDFPrompt() {
+async function renderPDFToImages(arrayBuffer) {
+  if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js failed to load.');
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const images = [];
+  const maxPages = Math.min(pdf.numPages, 20);
+  for (let i = 1; i <= maxPages; i++) {
+    const page     = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 1.5 });
+    const canvas   = document.createElement('canvas');
+    canvas.width   = viewport.width;
+    canvas.height  = viewport.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    images.push(canvas.toDataURL('image/jpeg', 0.75).split(',')[1]);
+  }
+  return images;
+}
+
+function buildImagePrompt() {
   const { llmCustomPrompt, llmRedFlagFocus, llmSummaryFormat } = llmSettings;
 
   const userCustomPrompt = llmCustomPrompt && llmCustomPrompt.trim();
@@ -452,13 +474,12 @@ function buildPDFPrompt() {
       `Lead with the most legally impactful change.\n\n`;
 
   return (
-    'You are a legal expert comparing two contract documents.\n\n' +
-    'The REFERENCE document is the version previously agreed or negotiated. ' +
-    'The EXECUTION document is the version now being presented for signature.\n\n' +
-    'Identify every difference between them — including any annotations, overlays, ' +
-    'handwritten notes, or text added anywhere on the page, not just in the main body.\n\n' +
-    'Identify each change by its clause or section name. ' +
-    'If no section name is apparent, quote the key phrase that changed.\n\n' +
+    'You are a legal expert comparing two versions of a contract.\n\n' +
+    'The REFERENCE is the version previously agreed or negotiated. ' +
+    'The EXECUTION is the version now being presented for signature.\n\n' +
+    'Look carefully at every part of every page — including any floating text, annotations, ' +
+    'stamps, or text added outside the normal document flow. ' +
+    'Identify each difference by its clause or section name, or by quoting the key phrase if no section is named.\n\n' +
     formatClause +
     'Respond in this exact format:\n\n' +
     'OVERALL: One sentence characterizing the nature of the changes.\n\n' +
@@ -466,19 +487,24 @@ function buildPDFPrompt() {
     '• [Clause/section name] — [what changed and its practical impact; note if more or less favorable to the signer]\n' +
     '(3–5 bullets max, most significant first)\n\n' +
     'RED FLAGS: Identify every change that is particularly concerning — flag: ' + redFlagBody + '. ' +
-    'Describe each red flag in its own bullet, quoting the specific language that changed. ' +
+    'Describe each red flag in its own bullet, quoting the specific language. ' +
     "If none, write 'None identified.'"
   );
 }
 
-async function callAIWithPDFs(execB64, refB64, refTextFallback) {
+async function callAIWithImages(execB64, refB64, refTextFallback) {
   const { llmProvider, llmApiKey, llmModel } = llmSettings;
   if (!llmProvider || llmProvider === 'none' || !llmApiKey) return null;
-  const prompt = buildPDFPrompt();
   try {
+    const execBytes  = Uint8Array.from(atob(execB64), c => c.charCodeAt(0));
+    const execImages = await renderPDFToImages(execBytes.buffer);
+    const refImages  = refB64
+      ? await renderPDFToImages(Uint8Array.from(atob(refB64), c => c.charCodeAt(0)).buffer)
+      : null;
+    const prompt = buildImagePrompt();
     switch (llmProvider) {
-      case 'gemini': return await callGeminiWithPDFs(llmApiKey, llmModel || 'gemini-2.0-flash', execB64, refB64, refTextFallback, prompt);
-      case 'claude': return await callClaudeWithPDFs(llmApiKey, llmModel || 'claude-sonnet-4-6',  execB64, refB64, refTextFallback, prompt);
+      case 'gemini': return await callGeminiWithImages(llmApiKey, llmModel || 'gemini-2.0-flash', execImages, refImages, refTextFallback, prompt);
+      case 'claude': return await callClaudeWithImages(llmApiKey, llmModel || 'claude-sonnet-4-6',  execImages, refImages, refTextFallback, prompt);
       default: return null;
     }
   } catch (e) {
@@ -486,17 +512,17 @@ async function callAIWithPDFs(execB64, refB64, refTextFallback) {
   }
 }
 
-async function callGeminiWithPDFs(apiKey, model, execB64, refB64, refTextFallback, prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+async function callGeminiWithImages(apiKey, model, execImages, refImages, refTextFallback, prompt) {
+  const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const parts = [];
-  parts.push({ text: 'REFERENCE DOCUMENT (previously agreed version):' });
-  if (refB64) {
-    parts.push({ inline_data: { mime_type: 'application/pdf', data: refB64 } });
+  parts.push({ text: `REFERENCE (previously agreed version) — ${refImages ? refImages.length : 'text'} page(s):` });
+  if (refImages) {
+    for (const img of refImages) parts.push({ inline_data: { mime_type: 'image/jpeg', data: img } });
   } else {
     parts.push({ text: refTextFallback });
   }
-  parts.push({ text: 'EXECUTION DOCUMENT (version now presented for signature):' });
-  parts.push({ inline_data: { mime_type: 'application/pdf', data: execB64 } });
+  parts.push({ text: `EXECUTION (version now presented for signature) — ${execImages.length} page(s):` });
+  for (const img of execImages) parts.push({ inline_data: { mime_type: 'image/jpeg', data: img } });
   parts.push({ text: prompt });
   const r = await fetch(url, {
     method: 'POST',
@@ -508,16 +534,16 @@ async function callGeminiWithPDFs(apiKey, model, execB64, refB64, refTextFallbac
   return d.candidates?.[0]?.content?.parts?.[0]?.text || null;
 }
 
-async function callClaudeWithPDFs(apiKey, model, execB64, refB64, refTextFallback, prompt) {
+async function callClaudeWithImages(apiKey, model, execImages, refImages, refTextFallback, prompt) {
   const content = [];
-  content.push({ type: 'text', text: 'REFERENCE DOCUMENT (previously agreed version):' });
-  if (refB64) {
-    content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: refB64 } });
+  content.push({ type: 'text', text: `REFERENCE (previously agreed version) — ${refImages ? refImages.length : 'text'} page(s):` });
+  if (refImages) {
+    for (const img of refImages) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } });
   } else {
     content.push({ type: 'text', text: refTextFallback });
   }
-  content.push({ type: 'text', text: 'EXECUTION DOCUMENT (version now presented for signature):' });
-  content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: execB64 } });
+  content.push({ type: 'text', text: `EXECUTION (version now presented for signature) — ${execImages.length} page(s):` });
+  for (const img of execImages) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } });
   content.push({ type: 'text', text: prompt });
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
