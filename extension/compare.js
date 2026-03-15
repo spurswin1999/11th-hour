@@ -450,8 +450,11 @@ async function renderPDFToImages(arrayBuffer) {
     const canvas   = document.createElement('canvas');
     canvas.width   = viewport.width;
     canvas.height  = viewport.height;
-    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-    images.push(canvas.toDataURL('image/jpeg', 0.75).split(',')[1]);
+    const annotationMode = pdfjsLib.AnnotationMode?.ENABLE ?? 1;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport, annotationMode }).promise;
+    const b64 = canvas.toDataURL('image/jpeg', 0.75).split(',')[1];
+    console.log(`[11th Hour] page ${i} rendered: ${Math.round(b64.length * 0.75 / 1024)} KB`);
+    images.push(b64);
   }
   return images;
 }
